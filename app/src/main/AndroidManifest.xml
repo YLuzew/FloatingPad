@@ -27,6 +27,7 @@
             android:name=".PadEditorActivity"
             android:exported="false" />
 
+        <!-- 悬浮按键层：负责显示和接收触摸 -->
         <service
             android:name=".FloatingPadService"
             android:exported="false"
@@ -36,6 +37,21 @@
                 android:value="floating game pad overlay" />
         </service>
 
+        <!-- 输入法：真正把键盘按键送进游戏的就是它 -->
+        <service
+            android:name=".PadInputMethodService"
+            android:exported="true"
+            android:label="@string/ime_name"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/pad_input_method" />
+        </service>
+
+        <!-- 没绑键的按钮退回触摸点击时用，不用触摸模式可以不开启 -->
         <service
             android:name=".PadAccessibilityService"
             android:exported="true"

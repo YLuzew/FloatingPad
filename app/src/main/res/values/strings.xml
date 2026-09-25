@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">悬浮按键</string>
-    <string name="acc_desc">用于把悬浮按键的按下动作注入到游戏里。不开启则按键点不动。</string>
+    <string name="ime_name">悬浮按键（按键映射）</string>
+    <string name="acc_desc">用于把没绑键的按钮以触摸点击方式注入到游戏。只用按键模式可以不开启。</string>
 </resources>

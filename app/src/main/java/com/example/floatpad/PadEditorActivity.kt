@@ -11,6 +11,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 
@@ -34,7 +35,6 @@ class PadEditorActivity : AppCompatActivity() {
         }
     }
 
-    /** 批量导入：选原版的 touchpad / virtualpad 目录 */
     private val pickFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
             uri?.let {
@@ -69,7 +69,6 @@ class PadEditorActivity : AppCompatActivity() {
         index = index.coerceIn(0, buttons.size - 1)
         val b = cur()
 
-        // 内置选项 + 工程里 pad_ 开头的图 + 已导入的图
         val extraIds = Textures.resIds() + Textures.assetIds() + Textures.importedIds()
         val extraNames = Textures.resNames() + Textures.assetLabels() + Textures.importedNames()
         val baseIds = Textures.BASE_IDS + extraIds
@@ -77,6 +76,32 @@ class PadEditorActivity : AppCompatActivity() {
         val iconIds = Textures.ICON_IDS + extraIds
         val iconNames = Textures.ICON_NAMES + extraNames
 
+        // 布局切换
+        root.addView(title("布局（点一下就整套换）"))
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val currentMode = PadConfig.loadMode(this)
+        PadMode.entries.forEach { mode ->
+            val mb = Button(this).apply {
+                text = if (mode == currentMode) "● ${mode.title}" else mode.title
+                textSize = 11f
+                setOnClickListener {
+                    PadConfig.saveMode(this@PadEditorActivity, mode)
+                    buttons.clear()
+                    buttons.addAll(PadConfig.modeButtons(mode))
+                    index = 0
+                    PadConfig.save(this@PadEditorActivity, buttons)
+                    FloatingPadService.reload(this@PadEditorActivity)
+                    render()
+                }
+            }
+            modeRow.addView(
+                mb,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+        }
+        root.addView(modeRow)
+
+        // 当前按键
         root.addView(title("第 ${index + 1} / ${buttons.size} 个按键"))
         root.addView(
             row(
@@ -105,6 +130,15 @@ class PadEditorActivity : AppCompatActivity() {
             )
         )
 
+        // 键位绑定
+        root.addView(title("绑定的键"))
+        root.addView(
+            chip(if (b.keyCode == 0) "未绑定（触摸点击）" else "当前：${PadConfig.keyName(b.keyCode)}") {
+                pickKey(b)
+            }
+        )
+        root.addView(title("绑了键就用输入法发键盘事件；不绑就退回触摸点击。"))
+
         root.addView(title("Hitbox 样式"))
         root.addView(
             row(
@@ -132,9 +166,7 @@ class PadEditorActivity : AppCompatActivity() {
             render()
         })
         root.addView(chip("从相册选上层贴图") { pickLayer2.launch("image/*") })
-        root.addView(
-            chip("从文件夹批量导入贴图（选 touchpad / virtualpad 目录）") { pickFolder.launch(null) }
-        )
+        root.addView(chip("从文件夹批量导入贴图") { pickFolder.launch(null) })
 
         root.addView(slider("上层缩放", b.layer2Scale, 0.30f, 1.00f) { b.layer2Scale = it })
         root.addView(slider("按键大小", b.size, 0.06f, 0.30f) { b.size = it })
@@ -176,53 +208,6 @@ class PadEditorActivity : AppCompatActivity() {
         }
         root.addView(colorRow)
 
-        // ---------------- 按键映射 ----------------
-
-        root.addView(title("按键映射（按下位置 ≠ 触发位置）"))
-        root.addView(
-            title(
-                if (b.mapped) {
-                    "已映射到 X ${(b.mapX * 100).toInt()}% / Y ${(b.mapY * 100).toInt()}%"
-                } else {
-                    "未映射：按下就在按键自己的位置触发"
-                }
-            )
-        )
-        root.addView(
-            chip(if (b.mapped) "清除映射" else "未映射") {
-                b.mapped = false
-                render()
-            }
-        )
-        root.addView(
-            title("设置方法：回游戏 → 点齿轮进编辑模式 → 长按要设的按键 → 再点游戏里那个键的位置")
-        )
-
-        // ---------------- 原版 mobile 预设 ----------------
-
-        root.addView(title("原版 mobile 预设（来自 assets/mobile）"))
-        root.addView(title("点名字 = 整套替换；点 ＋ = 追加到当前布局（动作键 + 方向键可自由拼）"))
-        PadConfig.ORIGINAL_MODES.groupBy { it.group }.forEach { (group, modes) ->
-            root.addView(title(group))
-            modes.forEach { mode ->
-                root.addView(
-                    rowWeighted(
-                        chip(mode.name) {
-                            buttons.clear()
-                            buttons.addAll(PadConfig.buildOriginal(mode))
-                            index = 0
-                            render()
-                        } to 3f,
-                        chip("＋") {
-                            buttons.addAll(PadConfig.buildOriginal(mode))
-                            index = buttons.size - 1
-                            render()
-                        } to 1f
-                    )
-                )
-            }
-        }
-
         root.addView(title("悬浮层在跑的话，保存后会立即刷新"))
         root.addView(
             chip("保存并应用") {
@@ -231,14 +216,18 @@ class PadEditorActivity : AppCompatActivity() {
                 toast("已保存")
             }
         )
-        root.addView(
-            chip("恢复默认（FNF 四键）") {
-                buttons.clear()
-                buttons.addAll(PadConfig.presetFnf4())
-                index = 0
+    }
+
+    /** 弹一个列表选键 */
+    private fun pickKey(b: PadButton) {
+        val names = PadConfig.KEYS.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("给「${b.label}」绑定按键")
+            .setItems(names) { _, which ->
+                b.keyCode = PadConfig.KEYS[which].code
                 render()
             }
-        )
+            .show()
     }
 
     // ---------------- 控件工具 ----------------
@@ -259,16 +248,6 @@ class PadEditorActivity : AppCompatActivity() {
         orientation = LinearLayout.HORIZONTAL
         views.forEach {
             addView(it, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        }
-    }
-
-    private fun rowWeighted(vararg items: Pair<View, Float>) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        items.forEach { (view, weight) ->
-            addView(
-                view,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weight)
-            )
         }
     }
 

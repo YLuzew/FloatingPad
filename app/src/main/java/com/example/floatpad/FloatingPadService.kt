@@ -8,14 +8,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
@@ -26,10 +22,16 @@ class FloatingPadService : Service() {
     private val buttons = mutableListOf<PadButton>()
     private val buttonViews = mutableListOf<PadButtonView>()
     private var toggleView: ToggleView? = null
-    private var captureView: View? = null
 
     private var screenW = 0
     private var screenH = 0
+
+    /** 屏幕里居中的那块 16:9 */
+    private var viewLeft = 0f
+    private var viewTop = 0f
+    private var viewW = 0f
+    private var viewH = 0f
+
     private var editMode = false
 
     override fun onCreate() {
@@ -38,7 +40,7 @@ class FloatingPadService : Service() {
         startForeground(NOTIFY_ID, buildNotification())
         Textures.init(this)
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        readScreenSize()
+        readMetrics()
         buttons.addAll(PadConfig.load(this))
         buttons.forEachIndexed { i, cfg -> addButtonWindow(cfg, i) }
         addToggleWindow()
@@ -51,7 +53,6 @@ class FloatingPadService : Service() {
 
     override fun onDestroy() {
         running = false
-        endMapCapture()
         buttonViews.forEach { runCatching { wm.removeView(it) } }
         buttonViews.clear()
         toggleView?.let { runCatching { wm.removeView(it) } }
@@ -63,7 +64,7 @@ class FloatingPadService : Service() {
 
     // ---------------- 构建 / 重建 ----------------
 
-    /** 配置变了：拆掉旧按键重新按新配置建，数量、贴图、样式全跟着变 */
+    /** 切布局或改配置后：拆掉旧按键按新配置重建 */
     private fun rebuildButtons() {
         buttonViews.forEach { runCatching { wm.removeView(it) } }
         buttonViews.clear()
@@ -77,10 +78,9 @@ class FloatingPadService : Service() {
         val view = PadButtonView(
             this,
             cfg,
-            resolveTap = { tapPointOf(cfg) },
+            onPress = { press(cfg) },
             onDrag = { dx, dy -> moveButton(cfg, dx, dy) },
-            onDragEnd = { PadConfig.save(this, buttons) },
-            onRequestMap = { startMapCapture(cfg) }
+            onDragEnd = { PadConfig.save(this, buttons) }
         )
         view.index = index
         view.editMode = editMode
@@ -90,30 +90,47 @@ class FloatingPadService : Service() {
         buttonViews.add(view)
     }
 
-    /** 映射过了就打在映射点上，否则就打在按键自己的位置上 */
-    private fun tapPointOf(cfg: PadButton): Pair<Float, Float> =
-        if (cfg.mapped) {
-            cfg.mapX * screenW to cfg.mapY * screenH
+    /**
+     * 按下时干什么：
+     * 绑了键 → 交给输入法发键盘事件；没绑键 → 退回触摸点击。
+     */
+    private fun press(cfg: PadButton) {
+        if (cfg.keyCode != 0) {
+            val sent = PadInputMethodService.instance?.sendKey(cfg.keyCode) ?: false
+            if (!sent) {
+                Toast.makeText(
+                    this,
+                    "发不出按键：请先把输入法切成「悬浮按键」",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         } else {
-            cfg.x * screenW to cfg.y * screenH
+            val (cx, cy) = centerOf(cfg)
+            PadAccessibilityService.instance?.tap(cx, cy)
         }
+    }
+
+    private fun centerOf(cfg: PadButton): Pair<Float, Float> =
+        (viewLeft + cfg.x * viewW) to (viewTop + cfg.y * viewH)
 
     private fun moveButton(cfg: PadButton, dx: Float, dy: Float) {
-        cfg.x = (cfg.x + dx / screenW).coerceIn(0.02f, 0.98f)
-        cfg.y = (cfg.y + dy / screenH).coerceIn(0.02f, 0.98f)
+        cfg.x = (cfg.x + dx / viewW).coerceIn(0.01f, 0.99f)
+        cfg.y = (cfg.y + dy / viewH).coerceIn(0.01f, 0.99f)
         buttonViews.firstOrNull { it.cfg === cfg }?.let { applyLayout(it, cfg) }
     }
 
     private fun applyLayout(v: PadButtonView, cfg: PadButton) {
         val size = sizePx(cfg.size)
+        val (cx, cy) = centerOf(cfg)
         v.lp.width = size
         v.lp.height = size
-        v.lp.x = (cfg.x * screenW - size / 2f).toInt()
-        v.lp.y = (cfg.y * screenH - size / 2f).toInt()
+        v.lp.x = (cx - size / 2f).toInt()
+        v.lp.y = (cy - size / 2f).toInt()
         runCatching { wm.updateViewLayout(v, v.lp) }
     }
 
     private fun buildLayoutParams(size: Int, cfg: PadButton): WindowManager.LayoutParams {
+        val (cx, cy) = centerOf(cfg)
         return WindowManager.LayoutParams(
             size, size,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -123,68 +140,9 @@ class FloatingPadService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (cfg.x * screenW - size / 2f).toInt()
-            y = (cfg.y * screenH - size / 2f).toInt()
+            x = (cx - size / 2f).toInt()
+            y = (cy - size / 2f).toInt()
         }
-    }
-
-    // ---------------- 取映射点 ----------------
-
-    /**
-     * 铺一层全屏透明层，用户点哪里，这个按键的映射点就是哪里。
-     * 取点过程中点击不会传到游戏，所以不会误触。
-     */
-    private fun startMapCapture(cfg: PadButton) {
-        if (captureView != null) return
-        val view = object : View(this) {
-            override fun onDraw(canvas: Canvas) {
-                super.onDraw(canvas)
-                val hint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = 0xCCFFFFFF.toInt()
-                    textAlign = Paint.Align.CENTER
-                    textSize = 48f
-                }
-                canvas.drawText("点一下游戏里这个按键的位置", width / 2f, height / 2f, hint)
-                val frame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = 0x88FFC107.toInt()
-                    style = Paint.Style.STROKE
-                    strokeWidth = 6f
-                }
-                canvas.drawRect(6f, 6f, width - 6f, height - 6f, frame)
-            }
-
-            override fun onTouchEvent(event: MotionEvent): Boolean {
-                if (event.actionMasked == MotionEvent.ACTION_UP) {
-                    cfg.mapX = (event.rawX / screenW).coerceIn(0f, 1f)
-                    cfg.mapY = (event.rawY / screenH).coerceIn(0f, 1f)
-                    cfg.mapped = true
-                    PadConfig.save(this@FloatingPadService, buttons)
-                    endMapCapture()
-                    buttonViews.firstOrNull { it.cfg === cfg }?.invalidate()
-                    Toast.makeText(
-                        this@FloatingPadService,
-                        "映射已设置（点齿轮可继续调）",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-                return true
-            }
-        }
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        )
-        runCatching { wm.addView(view, lp) }
-        captureView = view
-    }
-
-    private fun endMapCapture() {
-        captureView?.let { runCatching { wm.removeView(it) } }
-        captureView = null
     }
 
     // ---------------- 齿轮窗口 ----------------
@@ -216,18 +174,24 @@ class FloatingPadService : Service() {
 
     // ---------------- 杂项 ----------------
 
-    private fun sizePx(ratio: Float) = (ratio * minOf(screenW, screenH)).toInt()
+    /** 按键直径 = 比例 × 16:9 区域的高度 */
+    private fun sizePx(ratio: Float) = (ratio * viewH).toInt()
 
-    private fun readScreenSize() {
+    private fun readMetrics() {
         val m = resources.displayMetrics
         screenW = m.widthPixels
         screenH = m.heightPixels
+        val v = PadConfig.viewport(screenW, screenH)
+        viewLeft = v[0]
+        viewTop = v[1]
+        viewW = v[2]
+        viewH = v[3]
     }
 
-    /** 横竖屏切换时重排，避免位置跑飞 */
+    /** 横竖屏切换时重算 16:9 区域并重排 */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        readScreenSize()
+        readMetrics()
         buttonViews.forEach { applyLayout(it, it.cfg) }
     }
 
@@ -247,7 +211,7 @@ class FloatingPadService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_edit)
             .setContentTitle("悬浮按键运行中")
-            .setContentText("点齿轮编辑；长按按键可取映射点")
+            .setContentText("点齿轮可拖动按键；回控制页可切换布局")
             .setContentIntent(pi)
             .setOngoing(true)
             .build()

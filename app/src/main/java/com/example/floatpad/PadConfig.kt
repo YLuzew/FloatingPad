@@ -1,37 +1,38 @@
 package com.example.floatpad
 
 import android.content.Context
+import android.view.KeyEvent
 import org.json.JSONArray
 import org.json.JSONObject
 
 enum class PadShape { CIRCLE, ROUND_RECT }
 
+/** 三种可切换的布局 */
+enum class PadMode(val title: String) {
+    DPAD("十字键"),
+    DPAD_ACTIONS("十字键 + 控制键"),
+    HITBOX("Hitbox")
+}
+
 data class PadButton(
     var label: String = "A",
-    /** 中心 X，屏幕宽的比例 0~1 */
+    /** 相对「居中 16:9 区域」的比例，0~1 */
     var x: Float = 0.5f,
-    /** 中心 Y，屏幕高的比例 0~1 */
     var y: Float = 0.5f,
-    /** 直径，屏幕短边的比例 */
-    var size: Float = 0.15f,
+    /** 直径，相对 16:9 区域高度的比例 */
+    var size: Float = 0.13f,
     var shape: PadShape = PadShape.CIRCLE,
-    /** 底层贴图 id */
     var layer1: String = "base_ring",
-    /** 上层贴图 id */
     var layer2: String = "none",
-    /** 上层贴图相对按键半径的缩放 */
     var layer2Scale: Float = 0.72f,
-    /** 是否上色：开启后两层贴图都套上 tintColor */
     var tinted: Boolean = true,
     var tintColor: Int = 0xFFFFFFFF.toInt(),
     var alpha: Float = 0.85f,
-    /** 是否把「按下位置」和「触发位置」分开：为 true 时在 mapX/mapY 处注入点击 */
-    var mapped: Boolean = false,
-    /** 触发位置 X，屏幕宽的比例 */
-    var mapX: Float = 0.5f,
-    /** 触发位置 Y，屏幕高的比例 */
-    var mapY: Float = 0.5f
+    /** 绑定的键盘键码；0 = 不绑定，退回触摸点击 */
+    var keyCode: Int = 0
 )
+
+data class KeyOption(val name: String, val code: Int)
 
 object PadConfig {
 
@@ -42,191 +43,128 @@ object PadConfig {
     const val LANE_RIGHT = 0xFFF9393F.toInt()
 
     private const val PREF = "pad"
-    private const val KEY = "buttons_v3"
+    private const val KEY = "buttons_v4"
+    private const val KEY_MODE = "mode"
 
-    // ================= 原版 assets/mobile 的按键布局 =================
+    // ================= 可绑定的按键 =================
 
-    /**
-     * 原版坐标空间：1280 x 720（FNF 标准虚拟分辨率），按键图形 124px。
-     * 原版给的是图形左上角坐标（左键 x=0、P 键 y=2 都不会超出屏幕），这里换算成中心点比例。
-     */
-    private const val ORIG_W = 1280f
-    private const val ORIG_H = 720f
-    private const val ORIG_BTN = 124f
+    private val LETTERS = ('A'..'Z').map {
+        KeyOption(it.toString(), KeyEvent.KEYCODE_A + (it - 'A'))
+    }
+    private val DIGITS = ('0'..'9').map {
+        KeyOption(it.toString(), KeyEvent.KEYCODE_0 + (it - '0'))
+    }
+    private val FUNCTION = (1..12).map {
+        KeyOption("F$it", KeyEvent.KEYCODE_F1 + (it - 1))
+    }
 
-    /** 原版 json 里的一条按键：{ button, graphic, x, y, color } */
-    data class RawBtn(val graphic: String, val x: Float, val y: Float, val color: String)
+    val KEYS: List<KeyOption> = listOf(
+        KeyOption("不绑定", 0),
+        KeyOption("←", KeyEvent.KEYCODE_DPAD_LEFT),
+        KeyOption("→", KeyEvent.KEYCODE_DPAD_RIGHT),
+        KeyOption("↑", KeyEvent.KEYCODE_DPAD_UP),
+        KeyOption("↓", KeyEvent.KEYCODE_DPAD_DOWN),
+        KeyOption("Enter", KeyEvent.KEYCODE_ENTER),
+        KeyOption("Esc", KeyEvent.KEYCODE_ESCAPE),
+        KeyOption("Space", KeyEvent.KEYCODE_SPACE),
+        KeyOption("Tab", KeyEvent.KEYCODE_TAB),
+        KeyOption("Shift", KeyEvent.KEYCODE_SHIFT_LEFT),
+        KeyOption("Ctrl", KeyEvent.KEYCODE_CTRL_LEFT),
+        KeyOption("Alt", KeyEvent.KEYCODE_ALT_LEFT),
+        KeyOption("Del", KeyEvent.KEYCODE_DEL),
+        KeyOption("Back", KeyEvent.KEYCODE_BACK)
+    ) + LETTERS + DIGITS + FUNCTION
 
-    data class OriginalMode(val name: String, val group: String, val buttons: List<RawBtn>)
+    fun keyName(code: Int): String =
+        KEYS.firstOrNull { it.code == code }?.name
+            ?: if (code == 0) "未绑定" else "Key$code"
 
-    val ORIGINAL_MODES: List<OriginalMode> = listOf(
-        // ---- assets/mobile/ActionModes ----
-        OriginalMode(
-            "A", "ActionModes（右侧动作键）",
-            listOf(RawBtn("a", 1156f, 596f, "0xFF0000"))
-        ),
-        OriginalMode(
-            "A_B", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("a", 1156f, 596f, "0xFF0000"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00")
-            )
-        ),
-        OriginalMode(
-            "A_B_C", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("a", 1156f, 596f, "0xFF0000"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00"),
-                RawBtn("c", 908f, 596f, "0x44FF00")
-            )
-        ),
-        OriginalMode(
-            "A_B_C_D_V_X_Y_Z", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("v", 784f, 472f, "0x49A9B2"),
-                RawBtn("d", 784f, 596f, "0x0078FF"),
-                RawBtn("x", 908f, 472f, "0x99062D"),
-                RawBtn("c", 908f, 596f, "0x44FF00"),
-                RawBtn("y", 1032f, 472f, "0x4A35B9"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00"),
-                RawBtn("z", 1156f, 472f, "0xCCB98E"),
-                RawBtn("a", 1156f, 596f, "0xFF0000")
-            )
-        ),
-        OriginalMode(
-            "A_B_C_X_Y_Z", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("x", 908f, 472f, "0x99062D"),
-                RawBtn("c", 908f, 596f, "0x44FF00"),
-                RawBtn("y", 1032f, 472f, "0x4A35B9"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00"),
-                RawBtn("z", 1156f, 472f, "0xCCB98E"),
-                RawBtn("a", 1156f, 596f, "0xFF0000")
-            )
-        ),
-        OriginalMode(
-            "A_B_M_E", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("a", 1156f, 596f, "0xFF0000"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00"),
-                RawBtn("m", 908f, 596f, "0x00BBFF"),
-                RawBtn("e", 784f, 596f, "0xFF7D00")
-            )
-        ),
-        OriginalMode(
-            "A_B_X_Y", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("a", 1156f, 596f, "0xFF0000"),
-                RawBtn("b", 1032f, 596f, "0xFFCB00"),
-                RawBtn("x", 908f, 596f, "0x99062D"),
-                RawBtn("y", 784f, 596f, "0x4A35B9")
-            )
-        ),
-        OriginalMode(
-            "B", "ActionModes（右侧动作键）",
-            listOf(RawBtn("b", 1156f, 596f, "0xFFCB00"))
-        ),
-        OriginalMode(
-            "B_C", "ActionModes（右侧动作键）",
-            listOf(
-                RawBtn("c", 1032f, 596f, "0x44FF00"),
-                RawBtn("b", 1156f, 596f, "0xFFCB00")
-            )
-        ),
-        OriginalMode(
-            "P", "ActionModes（右侧动作键）",
-            listOf(RawBtn("p", 1156f, 2f, "0xE5DE00"))
-        ),
-        OriginalMode(
-            "Z", "ActionModes（右侧动作键）",
-            listOf(RawBtn("z", 1056f, 596f, "0xFF0000"))
-        ),
+    // ================= 居中 16:9 区域 =================
 
-        // ---- assets/mobile/DPadModes ----
-        OriginalMode(
-            "LEFT_FULL", "DPadModes（左侧方向键）",
-            listOf(
-                RawBtn("up", 98f, 405f, "0xFF12FA05"),
-                RawBtn("left", 0f, 500f, "0xFFC24B99"),
-                RawBtn("right", 196f, 500f, "0xFFF9393F"),
-                RawBtn("down", 98f, 596f, "0xFF00FFFF")
-            )
-        ),
-        OriginalMode(
-            "LEFT_RIGHT", "DPadModes（左侧方向键）",
-            listOf(
-                RawBtn("left", 0f, 587f, "0xFFC24B99"),
-                RawBtn("right", 127f, 587f, "0xFFF9393F")
-            )
-        ),
-        OriginalMode(
-            "RIGHT_FULL", "DPadModes（左侧方向键）",
-            listOf(
-                RawBtn("up", 1022f, 314f, "0xFF12FA05"),
-                RawBtn("left", 896f, 413f, "0xFFC24B99"),
-                RawBtn("right", 1148f, 413f, "0xFFF9393F"),
-                RawBtn("down", 1022f, 521f, "0xFF00FFFF")
-            )
-        ),
-        OriginalMode(
-            "UP_DOWN", "DPadModes（左侧方向键）",
-            listOf(
-                RawBtn("up", 0f, 472f, "0xFF12FA05"),
-                RawBtn("down", 0f, 596f, "0xFF00FFFF")
-            )
+    /** 返回 [left, top, width, height]（像素）：屏幕里居中的那块 16:9 */
+    fun viewport(screenW: Int, screenH: Int): FloatArray {
+        val target = 16f / 9f
+        var w = screenW.toFloat()
+        var h = screenH.toFloat()
+        if (w / h > target) w = h * target else h = w / target
+        return floatArrayOf((screenW - w) / 2f, (screenH - h) / 2f, w, h)
+    }
+
+    // ================= 三种布局 =================
+
+    fun modeButtons(mode: PadMode): MutableList<PadButton> = when (mode) {
+        PadMode.DPAD -> mutableListOf(
+            btn("↑", 0.16f, 0.62f, "icon_arrow_up", KeyEvent.KEYCODE_DPAD_UP, LANE_UP),
+            btn("←", 0.06f, 0.74f, "icon_arrow_left", KeyEvent.KEYCODE_DPAD_LEFT, LANE_LEFT),
+            btn("→", 0.26f, 0.74f, "icon_arrow_right", KeyEvent.KEYCODE_DPAD_RIGHT, LANE_RIGHT),
+            btn("↓", 0.16f, 0.86f, "icon_arrow_down", KeyEvent.KEYCODE_DPAD_DOWN, LANE_DOWN)
         )
+
+        PadMode.DPAD_ACTIONS ->
+            modeButtons(PadMode.DPAD).apply {
+                add(btn("A", 0.78f, 0.80f, "letter:a", KeyEvent.KEYCODE_ENTER, 0xFFFFD400.toInt()))
+                add(btn("B", 0.90f, 0.80f, "letter:b", KeyEvent.KEYCODE_ESCAPE, 0xFF3BD6FF.toInt()))
+            }
+
+        PadMode.HITBOX -> mutableListOf(
+            btn("←", 0.08f, 0.82f, "icon_arrow_left", KeyEvent.KEYCODE_DPAD_LEFT, LANE_LEFT),
+            btn("↓", 0.20f, 0.82f, "icon_arrow_down", KeyEvent.KEYCODE_DPAD_DOWN, LANE_DOWN),
+            btn("↑", 0.32f, 0.82f, "icon_arrow_up", KeyEvent.KEYCODE_DPAD_UP, LANE_UP),
+            btn("→", 0.44f, 0.82f, "icon_arrow_right", KeyEvent.KEYCODE_DPAD_RIGHT, LANE_RIGHT)
+        )
+    }
+
+    private fun btn(
+        label: String,
+        x: Float,
+        y: Float,
+        icon: String,
+        key: Int,
+        color: Int
+    ) = PadButton(
+        label = label,
+        x = x,
+        y = y,
+        size = 0.13f,
+        shape = PadShape.CIRCLE,
+        layer1 = "base_ring",
+        layer2 = icon,
+        layer2Scale = 0.72f,
+        tinted = true,
+        tintColor = color,
+        alpha = 0.85f,
+        keyCode = key
     )
 
-    /** 把原版模式转成一套新按键（每次调用都返回新对象，可以直接改） */
-    fun buildOriginal(mode: OriginalMode): MutableList<PadButton> =
-        mode.buttons.map { fromOriginal(it) }.toMutableList()
-
-    private fun fromOriginal(raw: RawBtn): PadButton {
-        val half = ORIG_BTN / 2f
-        return PadButton(
-            label = raw.graphic.uppercase(),
-            x = ((raw.x + half) / ORIG_W).coerceIn(0.02f, 0.98f),
-            y = ((raw.y + half) / ORIG_H).coerceIn(0.02f, 0.98f),
-            size = ORIG_BTN / ORIG_H,
-            shape = PadShape.CIRCLE,
-            layer1 = "base_ring",
-            // 有原版图就直接用原版图，没有才退回内置字母/箭头
-            layer2 = Textures.assetIdForGraphic(raw.graphic) ?: graphicToLayer2(raw.graphic),
-            layer2Scale = 0.72f,
-            tinted = true,
-            tintColor = parseHexColor(raw.color)
-        )
-    }
-
-    /** 方向键用内置箭头，其余字母用 letter: 动态画字 */
-    private fun graphicToLayer2(graphic: String): String = when (graphic.lowercase()) {
-        "up" -> "icon_arrow_up"
-        "down" -> "icon_arrow_down"
-        "left" -> "icon_arrow_left"
-        "right" -> "icon_arrow_right"
-        else -> "letter:${graphic.lowercase()}"
-    }
-
-    /** 原版颜色有 8 位（ARGB）也有 6 位（RGB），统一成 ARGB */
-    private fun parseHexColor(hex: String): Int {
-        val h = hex.removePrefix("0x").removePrefix("0X")
-        val v = runCatching { h.toLong(16) }.getOrDefault(0xFFFFFFFFL)
-        return if (h.length >= 8) v.toInt() else (0xFF000000L or v).toInt()
-    }
+    fun newButton(index: Int) = PadButton(
+        label = "K${index + 1}",
+        layer1 = "base_soft",
+        layer2 = "none",
+        tintColor = 0xFFFFFFFF.toInt()
+    )
 
     // ================= 存取 =================
 
+    fun loadMode(ctx: Context): PadMode {
+        val name = prefs(ctx).getString(KEY_MODE, PadMode.DPAD_ACTIONS.name)
+        return runCatching { PadMode.valueOf(name!!) }.getOrDefault(PadMode.DPAD_ACTIONS)
+    }
+
+    fun saveMode(ctx: Context, mode: PadMode) {
+        prefs(ctx).edit().putString(KEY_MODE, mode.name).apply()
+    }
+
     fun load(ctx: Context): MutableList<PadButton> {
-        val raw = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-            .getString(KEY, null)
-        if (raw.isNullOrBlank()) return presetFnf4()
-        return runCatching { fromJson(raw) }.getOrElse { presetFnf4() }
+        val raw = prefs(ctx).getString(KEY, null)
+        if (raw.isNullOrBlank()) return modeButtons(loadMode(ctx))
+        return runCatching { fromJson(raw) }.getOrElse { modeButtons(loadMode(ctx)) }
     }
 
     fun save(ctx: Context, list: List<PadButton>) {
-        ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-            .edit().putString(KEY, toJson(list)).apply()
+        prefs(ctx).edit().putString(KEY, toJson(list)).apply()
     }
+
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
     private fun toJson(list: List<PadButton>): String {
         val arr = JSONArray()
@@ -243,9 +181,7 @@ object PadConfig {
                 put("tinted", b.tinted)
                 put("tintColor", b.tintColor)
                 put("alpha", b.alpha.toDouble())
-                put("mapped", b.mapped)
-                put("mapX", b.mapX.toDouble())
-                put("mapY", b.mapY.toDouble())
+                put("keyCode", b.keyCode)
             })
         }
         return arr.toString()
@@ -261,7 +197,7 @@ object PadConfig {
                     label = o.optString("label", "A"),
                     x = o.optDouble("x", 0.5).toFloat(),
                     y = o.optDouble("y", 0.5).toFloat(),
-                    size = o.optDouble("size", 0.15).toFloat(),
+                    size = o.optDouble("size", 0.13).toFloat(),
                     shape = runCatching { PadShape.valueOf(o.optString("shape")) }
                         .getOrDefault(PadShape.CIRCLE),
                     layer1 = o.optString("layer1", "base_ring"),
@@ -270,43 +206,10 @@ object PadConfig {
                     tinted = o.optBoolean("tinted", true),
                     tintColor = o.optInt("tintColor", 0xFFFFFFFF.toInt()),
                     alpha = o.optDouble("alpha", 0.85).toFloat(),
-                    mapped = o.optBoolean("mapped", false),
-                    mapX = o.optDouble("mapX", 0.5).toFloat(),
-                    mapY = o.optDouble("mapY", 0.5).toFloat()
+                    keyCode = o.optInt("keyCode", 0)
                 )
             )
         }
         return out
     }
-
-    // ================= 自带预设 =================
-
-    fun newButton(index: Int) = PadButton(
-        label = "B${index + 1}",
-        layer1 = "base_soft",
-        layer2 = "none",
-        tintColor = 0xFFFFFFFF.toInt()
-    )
-
-    /** FNF 四键 */
-    fun presetFnf4() = mutableListOf(
-        PadButton("←", 0.10f, 0.78f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_arrow_left", 0.72f, true, LANE_LEFT),
-        PadButton("↓", 0.27f, 0.78f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_arrow_down", 0.72f, true, LANE_DOWN),
-        PadButton("↑", 0.10f, 0.60f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_arrow_up", 0.72f, true, LANE_UP),
-        PadButton("→", 0.27f, 0.60f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_arrow_right", 0.72f, true, LANE_RIGHT)
-    )
-
-    /** FNF 六键（四键 + A/B） */
-    fun presetFnf6() = presetFnf4().apply {
-        add(PadButton("A", 0.73f, 0.78f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_a", 0.70f, true, 0xFFFFD400.toInt()))
-        add(PadButton("B", 0.90f, 0.78f, 0.15f, PadShape.CIRCLE, "base_ring", "icon_b", 0.70f, true, 0xFF3BD6FF.toInt()))
-    }
-
-    /** 十字键：换成圆角方样式 */
-    fun presetDpad() = mutableListOf(
-        PadButton("←", 0.12f, 0.80f, 0.16f, PadShape.ROUND_RECT, "base_square", "icon_arrow_left", 0.70f, true, LANE_LEFT),
-        PadButton("↓", 0.28f, 0.80f, 0.16f, PadShape.ROUND_RECT, "base_square", "icon_arrow_down", 0.70f, true, LANE_DOWN),
-        PadButton("↑", 0.12f, 0.62f, 0.16f, PadShape.ROUND_RECT, "base_square", "icon_arrow_up", 0.70f, true, LANE_UP),
-        PadButton("→", 0.28f, 0.62f, 0.16f, PadShape.ROUND_RECT, "base_square", "icon_arrow_right", 0.70f, true, LANE_RIGHT)
-    )
 }

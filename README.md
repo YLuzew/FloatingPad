@@ -1,102 +1,70 @@
 # FloatingPad
 
-可自定义的安卓悬浮虚拟按键，用来给没有触屏支持的游戏（比如 Friday Night Funkin'）加一层自己摆的按键。
+可自定义的安卓悬浮虚拟按键，给没有触屏支持的游戏（比如 Friday Night Funkin'）加一层自己摆的、能绑键盘键的按键。
 
-原理：`WindowManager` 悬浮窗（每个按键一个独立小窗）+ `AccessibilityService.dispatchGesture` 注入点击，**无需 root**。
+## 原理（关键）
 
-## 能改什么
+**悬浮窗 + 输入法**，两个身份配合：
 
-- **按键数量**：不限，编辑器里随时增删
-- **两层贴图**：每个按键分底层（底盘）与上层（图标），可分别选图
-- **贴图来源**：内置代码绘制 / 字母动态绘制 / `assets/pad/` 随包图片 / `res/drawable` 的 `pad_*.png` / 相册导入 / 文件夹批量导入
-- **Hitbox 样式**：圆形 / 圆角方
-- **是否上色**：可开关，开了用色板颜色给两层套色
-- **按键映射**：按下位置和触发位置可以分开
+- **悬浮窗**（`TYPE_APPLICATION_OVERLAY`）负责显示按钮、接收触摸；每个按键一个独立小窗，按键以外的区域全部透传给游戏。
+- **输入法**（`InputMethodService`）负责把键盘事件真正送进游戏。这是免 root 下发按键的唯一正路：`INJECT_EVENTS` 是系统签名权限，普通 App 拿不到；无障碍服务只能注入触摸手势，发不了 Enter / ESC。
 
-## 放自己的贴图（重点）
+这套架构是拆开参考应用「游戏键盘」（`com.locnet.gamekeyboard2`）后确定的：它声明了 `android.view.InputMethod` 服务（`BIND_INPUT_METHOD`）+ `SYSTEM_ALERT_WINDOW`，没有无障碍服务。
 
-**推荐：放到 `app/src/main/assets/pad/`**
+**代价**：玩之前要把当前输入法切成「悬浮按键」，跟用「游戏键盘」一样。
 
-assets 不是安卓资源，**文件名大小写、空格都不限制**，原版那批 `A.png`、`LEFT.png`、`bg.png` 可以原名直接丢进去，不用改任何名字。重新编译后自动出现在贴图选项里。
+## 三种可切换布局
 
-```
-app/src/main/assets/pad/
-├── A.png
-├── LEFT.png
-├── UP.png
-├── bg.png
-└── ...
-```
+控制页和编辑器顶部都能切，点一下整套换：
 
-**不推荐：放 `res/drawable/`**
+- **十字键**：四个方向，绑方向键
+- **十字键 + 控制键**：十字键 + A（默认绑 Enter）+ B（默认绑 Esc）
+- **Hitbox**：四个方向排成一排，适合音游轨道
 
-安卓对资源文件名有硬性限制：**只能用小写字母、数字、下划线**。`A.png` 这种大写名会让编译直接报错（`invalid file name`）。非要放这里的话，必须全改成小写、以 `pad_` 开头（如 `pad_left.png`）。
+## 按键绑定
 
-**运行时导入（不用重新编译）**
+每个按键可以绑一个键盘键（←→↑↓ / Enter / Esc / Space / Tab / Shift / Ctrl / Alt / Del / Back / A~Z / 0~9 / F1~F12）。
 
-- 单张：编辑器里点「从相册选底层/上层贴图」
-- 批量：点「从文件夹批量导入贴图」，直接选图片所在目录，里面所有图一次拷进来，原名保留
+- **绑了键** → 按下时由输入法发出对应的键盘事件
+- **不绑（未绑定）** → 退回触摸点击，需要开无障碍服务
 
-> 内置贴图（圆环、柔光、圆角方、四方向箭头、A/B/★）和字母（`letter:a` ~ `letter:z`）都是代码画的，一张图都不放也能跑。
+按钮下方会直接标出它代表的键（触摸模式的标「触摸」），一眼能看出哪个是哪个。
 
-## 应用图标
+## 位置：居中 16:9 区域
 
-图标是**矢量 XML**，不是 PNG 图片，所以你在 drawable 里找不到“图标图片”：
+所有按键都建在屏幕居中那块 **16:9** 矩形里：先算出 `min(屏宽, 屏高×16/9) × min(屏高, 屏宽×9/16)` 的居中矩形，按键坐标和大小都按这个矩形的比例算。所以换机型、转屏，相对位置都不会跑。
 
-- `app/src/main/res/drawable/ic_launcher_foreground.xml` —— 图形本体（四个方向箭头 + 中心圆点，用 FNF 四键色）
-- `app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`、`ic_launcher_round.xml` —— 自适应图标壳
-- `app/src/main/res/values/colors.xml` —— 图标底色 `#12121A`
+## 贴图
 
-因为 `minSdk = 26`，自适应图标已经够用，**不需要任何 PNG**。用 Android Studio 打开工程，双击那几个 xml 就能预览效果。
+每个按键分底层（底盘）与上层（图标），可分别选图。三种来源：
 
-## 原版 mobile 预设
+1. **随包图片**：放到 `app/src/main/assets/pad/`。assets 不是资源，文件名大小写、空格都不限制。
+2. **`res/drawable` 下的 `pad_*.png`**：注意安卓限制资源名只能小写。
+3. **运行时导入**：相册单张选，或「从文件夹批量导入贴图」。
 
-编辑器底部内置了原版 `assets/mobile` 里的全部 15 个按键模式，坐标和颜色按原数据换算：
-
-**ActionModes（右侧动作键）**：A、A_B、A_B_C、A_B_C_D_V_X_Y_Z、A_B_C_X_Y_Z、A_B_M_E、A_B_X_Y、B、B_C、P、Z
-
-**DPadModes（左侧方向键）**：LEFT_FULL、LEFT_RIGHT、RIGHT_FULL、UP_DOWN
-
-点模式名字 = 整套替换；点 `＋` = 追加到当前布局。所以你可以先加一个 ActionMode，再追加一个 DPadMode，跟原版组合逻辑一致。
-
-坐标换算说明：原版是 1280×720 虚拟分辨率、按键图形 124px，且给的是图形**左上角**坐标（左键 x=0、P 键 y=2 都不会超出屏幕），本工程换算成中心点比例。
-
-## 按键映射
-
-音游的判定点在游戏自己的位置，但你的拇指想放的地方可能不一样。映射就是把这个拆开：
-
-- 未映射时：按下按键 → 在按键自己的位置注入点击
-- 已映射时：按下按键 → 在映射点注入点击
-
-设置方法：回到游戏 → 点左上角齿轮进编辑模式 → **长按要设的按键**（约 0.6 秒）→ 屏幕变黄框，点一下游戏里那个键的位置，自动保存。
-
-编辑模式里，已设映射的按键右上角会有一个蓝色十字靶标。要取消就在编辑器里点「清除映射」。
+内置贴图（圆环、柔光、圆角方、四方向箭头、A/B/★）和字母（`letter:a`~`letter:z`）都是代码画的，一张图不放也能跑。
 
 ## 构建
 
-推到 GitHub 后，Actions 会自动编译并上传 APK；打 `v*` 标签还会自动发 Release。
+推到 GitHub 后 Actions 自动编译并上传 APK；打 `v*` 标签会自动发 Release。
 
-本地构建：用 Android Studio 打开本目录直接 Run，或
+本地：用 Android Studio 打开直接 Run，或 `gradle assembleDebug`（仓库未含 gradle wrapper，本地有 Gradle 可先跑 `gradle wrapper`）。
 
-```bash
-gradle assembleDebug
-```
+## 手机上怎么用
 
-（仓库未包含 `gradle/wrapper`，本地有 Gradle 的话可以先跑 `gradle wrapper` 补上。）
+1. 装好后打开应用，点「授予悬浮窗权限」。
+2. 点「启用本应用的输入法」，在系统设置里把它勾上。
+3. 点「把当前输入法切成「悬浮按键」」，选它。
+4. 点「启动悬浮按键」。
+5. 回游戏即可。点左上角齿轮进编辑模式可以拖按键；回控制页可切布局。
 
-## 使用
-
-1. 装好后打开应用，依次点「授予悬浮窗权限」和「开启无障碍服务」。
-2. 点「3. 启动悬浮按键」，屏幕上出现按键和左上角齿轮。
-3. 点齿轮进编辑模式（按键变黄色虚线框、带序号），拖动改位置，松手自动存。
-4. 回控制页点「编辑按键」可以增减数量、换贴图、改样式、开关上色、选原版预设、清映射。
+> 如果某个按键按下去弹出「发不出按键」，说明输入法没切成这个应用。
 
 ## 已知限制
 
-- 无障碍注入手势要过系统手势管道，单次延迟在几十毫秒量级且会波动。对判定严格的音游可能偏软；游戏若自带触屏按键，优先用游戏自带的。
-- 映射的是「点击坐标」，不是键盘按键。免 root 的情况下，无障碍服务无法向其他应用发送按键事件（那是 `INJECT_EVENTS` 权限，只有系统应用能拿）。
-- `Textures` 靠反射扫 `R.drawable` 找 `pad_` 贴图，所以 `buildTypes` 里不要开 `minifyEnabled`（现在默认就是关的）。
+- 发键盘事件靠 `InputConnection`，需要当前有输入焦点。游戏若没有焦点窗口，键盘事件发不出去（这时用未绑定的触摸模式）。
 - 部分机型会在后台清理服务，建议给本应用开「允许后台运行」。
+- `Textures` 靠反射扫 `R.drawable` 找 `pad_` 贴图，`buildTypes` 里不要开 `minifyEnabled`（现在默认就是关的）。
 
 ## 目录
 
@@ -105,12 +73,14 @@ app/src/main/
 ├── assets/pad/                   随包贴图（文件名随便起）
 ├── res/drawable/                 内置矢量图标 + pad_ 开头的贴图
 ├── res/mipmap-anydpi-v26/        自适应启动图标
+├── res/xml/                      输入法配置 + 无障碍配置
 └── java/com/example/floatpad/
-    ├── PadConfig.kt              按键模型 + 持久化 + 预设（含原版 15 个模式）
+    ├── PadConfig.kt              按键模型 + 三种布局 + 键位表 + 16:9 计算
     ├── Textures.kt               内置贴图 / 字母绘制 + assets / res / 相册 / 文件夹四种来源
-    ├── PadAccessibilityService.kt  手势注入
+    ├── PadInputMethodService.kt  输入法：真正发键盘事件
+    ├── PadAccessibilityService.kt 无障碍：只负责触摸模式的点击注入
     ├── PadButtonView.kt          按键渲染与触摸（含齿轮 ToggleView）
-    ├── FloatingPadService.kt     悬浮窗管理 + 取映射点
+    ├── FloatingPadService.kt     悬浮窗管理 + 16:9 定位 + 按下分发
     ├── MainActivity.kt           控制页
     └── PadEditorActivity.kt      按键编辑器
 ```

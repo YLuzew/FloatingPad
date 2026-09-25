@@ -18,12 +18,10 @@ import kotlin.math.hypot
 class PadButtonView(
     context: Context,
     val cfg: PadButton,
-    /** 真正要注入点击的屏幕坐标（已把按键映射算进去） */
-    private val resolveTap: () -> Pair<Float, Float>,
+    /** 按下时交给服务决定：发按键还是发触摸 */
+    private val onPress: () -> Unit,
     private val onDrag: (Float, Float) -> Unit,
-    private val onDragEnd: () -> Unit,
-    /** 编辑模式下长按：给这个按键取映射点 */
-    private val onRequestMap: () -> Unit
+    private val onDragEnd: () -> Unit
 ) : View(context) {
 
     lateinit var lp: WindowManager.LayoutParams
@@ -39,8 +37,6 @@ class PadButtonView(
     private var lastRawX = 0f
     private var lastRawY = 0f
 
-    private val mapRunnable = Runnable { onRequestMap() }
-
     private val basePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val editPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -48,11 +44,6 @@ class PadButtonView(
         strokeWidth = 4f
         pathEffect = DashPathEffect(floatArrayOf(14f, 12f), 0f)
         color = 0xFFFFC107.toInt()
-    }
-    private val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
-        color = 0xFF3BD6FF.toInt()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -98,8 +89,20 @@ class PadButtonView(
             Textures.draw(canvas, cfg.layer2, cx, cy, r * cfg.layer2Scale, iconPaint)
         }
 
+        // 4. 绑了键就在底下标出来，一眼能看出这个键代表什么
+        if (!editMode) {
+            val name = if (cfg.keyCode == 0) "触摸" else PadConfig.keyName(cfg.keyCode)
+            val tagPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (cfg.keyCode == 0) 0x99FFAB40.toInt() else 0xCCFFFFFF.toInt()
+                textAlign = Paint.Align.CENTER
+                textSize = r * 0.42f
+                isFakeBoldText = true
+            }
+            canvas.drawText(name, cx, cy + r * 0.82f, tagPaint)
+        }
+
+        // 5. 编辑模式：虚线框 + 序号
         if (editMode) {
-            // 虚线框 + 序号
             canvas.drawCircle(cx, cy, r - 2f, editPaint)
             val numPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = 0xFFFFC107.toInt()
@@ -107,16 +110,6 @@ class PadButtonView(
                 textAlign = Paint.Align.CENTER
             }
             canvas.drawText("${index + 1}", cx, cy - r * 0.62f, numPaint)
-
-            // 已设映射的按键右上角打个十字靶标
-            if (cfg.mapped) {
-                val br = r * 0.24f
-                val bx = cx + r * 0.66f
-                val by = cy - r * 0.66f
-                canvas.drawCircle(bx, by, br, badgePaint)
-                canvas.drawLine(bx - br, by, bx + br, by, badgePaint)
-                canvas.drawLine(bx, by - br, bx, by + br, badgePaint)
-            }
         }
     }
 
@@ -126,13 +119,9 @@ class PadButtonView(
                 lastRawX = event.rawX
                 lastRawY = event.rawY
                 dragging = false
-                if (editMode) {
-                    // 编辑模式：长按 0.6 秒 = 给这个按键取映射点
-                    postDelayed(mapRunnable, 600L)
-                } else {
-                    // 游戏模式：按下即注入，尽量把延迟做小
-                    val p = resolveTap()
-                    PadAccessibilityService.instance?.tap(p.first, p.second)
+                if (!editMode) {
+                    // 按下即触发，尽量把延迟做小
+                    onPress()
                 }
                 return true
             }
@@ -142,7 +131,6 @@ class PadButtonView(
                     val dx = event.rawX - lastRawX
                     val dy = event.rawY - lastRawY
                     if (hypot(dx, dy) >= 4f) {
-                        removeCallbacks(mapRunnable)
                         dragging = true
                         lastRawX = event.rawX
                         lastRawY = event.rawY
@@ -153,7 +141,6 @@ class PadButtonView(
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                removeCallbacks(mapRunnable)
                 if (dragging) onDragEnd()
                 dragging = false
                 return true
